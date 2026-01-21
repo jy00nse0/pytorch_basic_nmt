@@ -83,7 +83,7 @@ class NMT(nn.Module):
         self.src_embed = nn.Embedding(len(vocab.src), embed_size, padding_idx=vocab.src['<pad>'])
         self.tgt_embed = nn.Embedding(len(vocab.tgt), embed_size, padding_idx=vocab.tgt['<pad>'])
 
-        self.encoder_lstm = nn.LSTM(embed_size, hidden_size, num_layers=num_layers, bidirectional=True, dropout=dropout_rate if num_layers > 1 else 0.)
+        self.encoder_lstm = nn.LSTM(embed_size, hidden_size, num_layers=num_layers, bidirectional=False, dropout=dropout_rate if num_layers > 1 else 0.)
         
         decoder_lstm_input = embed_size + hidden_size if self.input_feed else embed_size
         
@@ -96,11 +96,11 @@ class NMT(nn.Module):
         # attention: dot product attention
         # project source encoding to decoder rnn's state space
         if self.use_attention:
-            self.att_src_linear = nn.Linear(hidden_size * 2, hidden_size, bias=False)
+            self.att_src_linear = nn.Linear(hidden_size, hidden_size, bias=False)
 
             # transformation of decoder hidden states and context vectors before reading out target words
             # this produces the `attentional vector` in (Luong et al., 2015)
-            self.att_vec_linear = nn.Linear(hidden_size * 2 + hidden_size, hidden_size, bias=False)
+            self.att_vec_linear = nn.Linear(hidden_size + hidden_size, hidden_size, bias=False)
 
         # prediction layer of the target vocabulary
         self.readout = nn.Linear(hidden_size, len(vocab.tgt), bias=False)
@@ -109,7 +109,8 @@ class NMT(nn.Module):
         self.dropout = nn.Dropout(self.dropout_rate)
 
         # initialize the decoder's state and cells with encoder hidden states
-        self.decoder_cell_init = nn.Linear(hidden_size * 2, hidden_size)
+        #self.decoder_cell_init = nn.Linear(hidden_size, hidden_size)
+        self.decoder_cell_init = None
 
         self.label_smoothing = label_smoothing
         if label_smoothing > 0.:
@@ -190,12 +191,13 @@ class NMT(nn.Module):
         src_word_embeds = self.src_embed(src_sents_var)
         packed_src_embed = pack_padded_sequence(src_word_embeds, src_sent_lens)
 
-        # src_encodings: (src_sent_len, batch_size, hidden_size * 2)
+        # src_encodings: (src_sent_len, batch_size, hidden_size)
         # last_state, last_cell: (num_layers * 2, batch_size, hidden_size)
+        # src_encodings : encoder output (last_state : h_n , last_cell : kwargs()
         src_encodings, (last_state, last_cell) = self.encoder_lstm(packed_src_embed)
         src_encodings, _ = pad_packed_sequence(src_encodings)
 
-        # (batch_size, src_sent_len, hidden_size * 2)
+        # (batch_size, src_sent_len, hidden_size)
         src_encodings = src_encodings.permute(1, 0, 2)
         
         batch_size = src_encodings.size(0)
@@ -647,7 +649,8 @@ def train(args: Dict):
 
     model = model.to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=float(args['--lr']))
+    #optimizer = torch.optim.Adam(model.parameters(), lr=float(args['--lr']))
+    optimizer = torch.optim.SGD(model.parameters(), lr=float(args['--lr']))
 
     num_trial = 0
     train_iter = patience = cum_loss = report_loss = cum_tgt_words = report_tgt_words = 0
