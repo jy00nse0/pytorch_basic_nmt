@@ -32,7 +32,7 @@ python nmt.py \
     --dropout 0.0 \
     --clip-grad 5.0 \
     --max-epoch 10 \
-    --lr 1.0 \
+    --lr 0.0001 \
     --save-to ${work_dir}/model.bin \
     --lr-decay 0.5 \
     --no-attention
