@@ -1,14 +1,14 @@
 #!/bin/sh
 
 vocab="data/vocab.json"
-train_src="data/train.de-en.de.wmixerprep"
-train_tgt="data/train.de-en.en.wmixerprep"
-dev_src="data/valid.de-en.de"
-dev_tgt="data/valid.de-en.en"
-test_src="data/test.de-en.de"
-test_tgt="data/test.de-en.en"
+train_src="data/wmt14_tok_len50/train.en"
+train_tgt="data/wmt14_tok_len50/train.de"
+dev_src="data/wmt14_tok_len50/validation.en"
+dev_tgt="data/wmt14_tok_len50/validation.de"
+test_src="data/wmt14_tok_len50/test.en"
+test_tgt="data/wmt14_tok_len50/test.de"
 
-work_dir="work_dir"
+work_dir="/content/drive/MyDrive/workspace/T1_base"
 
 mkdir -p ${work_dir}
 echo save results to ${work_dir}
@@ -23,25 +23,29 @@ python nmt.py \
     --dev-src ${dev_src} \
     --dev-tgt ${dev_tgt} \
     --input-feed \
-    --valid-niter 2400 \
-    --batch-size 64 \
-    --hidden-size 256 \
-    --embed-size 256 \
+    --valid-niter 32323 \
+    --batch-size 128 \
+    --hidden-size 1000 \
+    --embed-size 1000 \
     --uniform-init 0.1 \
-    --label-smoothing 0.1 \
-    --dropout 0.2 \
+    --label-smoothing 0.0 \
+    --dropout 0.0 \
     --clip-grad 5.0 \
+    --max-epoch 10 \
+    --lr 1.0 \
     --save-to ${work_dir}/model.bin \
-    --lr-decay 0.5 
+    --lr-decay 0.5 \
+    --no-attention
 
 # decoding
 python nmt.py \
     decode \
     --cuda \
-    --beam-size 5 \
-    --max-decoding-time-step 100 \
+    --beam-size 1 \
+    --max-decoding-time-step 50 \
     ${work_dir}/model.bin \
     ${test_src} \
     ${work_dir}/decode.txt
+
 
 perl multi-bleu.perl ${test_tgt} < ${work_dir}/decode.txt
