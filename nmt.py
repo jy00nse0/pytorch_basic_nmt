@@ -204,17 +204,15 @@ class NMT(nn.Module):
 
         # Handle multi-layer encoder state
         # Reshape to (num_layers, directions, batch, hidden)
-        last_cell = last_cell.view(self.num_layers, 2, batch_size, self.hidden_size)
+        last_cell = last_cell.view(self.num_layers, 1, batch_size, self.hidden_size) # uni-direct
         
-        # We use the final layer's forward and backward states to initialize the decoder
-        # Take the last layer: index -1
-        last_layer_cell = last_cell[-1] 
-        
-        dec_init_cell = self.decoder_cell_init(torch.cat([last_layer_cell[0], last_layer_cell[1]], dim=1))
-        dec_init_state = torch.tanh(dec_init_cell)
+        # dec_init_cell = self.decoder_cell_init(torch.cat([last_layer_cell[0], last_layer_cell[1]], dim=1))
+        dec_init_cell = last_cell  # uni-direct
+        # dec_init_state = torch.tanh(dec_init_cell)
+        dec_init_state = last_state
 
         # Replicate the initial state for all decoder layers
-        decoder_init_vec = [(dec_init_state, dec_init_cell) for _ in range(self.num_layers)]
+        decoder_init_vec = [(dec_init_state[i], dec_init_cell[i]) for i in range(self.num_layers)]
 
         return src_encodings, decoder_init_vec
 
