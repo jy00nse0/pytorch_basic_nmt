@@ -161,9 +161,15 @@ class NMT(nn.Module):
             tgt_words_mask = (tgt_sents_var != self.vocab.tgt['<pad>']).float()
 
             # (tgt_sent_len - 1, batch_size)
+            # tgt_words_log_prob : shape: (T-1, B, |V|)
+            # 디코더가 각 시점마다 모든 단어에 대해 예측한 log-prob
+            # tgt_sents_var[1:] : shape: (T-1, B)
+            # 정답 토큰 id, <s> 다음부터 시작하는 gold target
+            # t에서 모델이 정답 단어에 부여한 log-prob만 추출
             tgt_gold_words_log_prob = torch.gather(tgt_words_log_prob, index=tgt_sents_var[1:].unsqueeze(-1), dim=-1).squeeze(-1) * tgt_words_mask[1:]
 
         # (batch_size)
+        # 각 문장에서 모델이 정답 단어의 부여한 확률 (배치사이즈의 1차원 벡터)
         scores = tgt_gold_words_log_prob.sum(dim=0)
 
         return scores
@@ -670,6 +676,7 @@ def train(args: Dict):
             # (batch_size)
             example_losses = -model(src_sents, tgt_sents)
             batch_loss = example_losses.sum()
+            # 한 배치 내 모든 문장의 손실 평균 : loss
             loss = batch_loss / batch_size
 
             loss.backward()
@@ -678,7 +685,7 @@ def train(args: Dict):
             grad_norm = torch.nn.utils.clip_grad_norm(model.parameters(), clip_grad)
 
             optimizer.step()
-
+            # mark till here
             batch_losses_val = batch_loss.item()
             report_loss += batch_losses_val
             cum_loss += batch_losses_val
