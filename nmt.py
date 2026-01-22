@@ -493,14 +493,19 @@ class NMT(nn.Module):
             log_p_t = torch.log(p_t)
 
             # (total_sample_size)
+            # 확률 분포에 따라 문장을 **무작위 생성(Random Sampling)
+            # p_t는 현재 시점($t$)에서 모델이 예측한 단어별 확률값들(Softmax 결과)을 담고 있습니다. multinomial은 이 확률에 비례하여 단어를 뽑
             y_t = torch.multinomial(p_t, num_samples=1)
             log_p_y_t = torch.gather(log_p_t, 1, y_t).squeeze(1)
             y_t = y_t.squeeze(1)
 
             samples.append(y_t)
-
+            # 문장이 끝났는지(End of Sentence, EOS)를 추적
+            # |= (Bitwise OR 연산)
             sample_ends |= torch.eq(y_t, eos_id).byte()
+            # (1. - sample_ends.float())는 이미 끝난 문장의 점수는 더 이상 합산하지 않기 위한 필터링
             sample_scores = sample_scores + log_p_y_t * (1. - sample_ends.float())
+            # sample_scores은 배치 내 각 문장의 각 단어들의 음의 로그 우도의 총합 (한 문장의 스코어)
 
             if torch.all(sample_ends):
                 break
@@ -522,6 +527,8 @@ class NMT(nn.Module):
         for src_sent_id in range(batch_size):
             for sample_id in range(sample_size):
                 offset = sample_id * batch_size + src_sent_id
+                # Hypothesis = namedtuple('Hypothesis', ['value', 'score'])
+                # completed_samples[i][j]는 **"i번째 소스 문장에 대해 j번째로 생성된 번역 결과를 담음음
                 hyp = Hypothesis(value=self.vocab.tgt.indices2words(_completed_samples[src_sent_id][sample_id])[:-1],
                                  score=sample_scores[offset].item())
                 completed_samples[src_sent_id][sample_id] = hyp
@@ -736,10 +743,10 @@ def train(args: Dict):
                 valid_metric = -dev_ppl
 
                 print('validation: iter %d, dev. ppl %f' % (train_iter, dev_ppl), file=sys.stderr)
-
+                
                 is_better = len(hist_valid_scores) == 0 or valid_metric > max(hist_valid_scores)
                 hist_valid_scores.append(valid_metric)
-
+                '''
                 if is_better:
                     patience = 0
                     print('save currently the best model to [%s]' % model_save_path, file=sys.stderr)
@@ -778,11 +785,21 @@ def train(args: Dict):
 
                         # reset patience
                         patience = 0
+                '''
+        if epoch >= 5:
+                    # 현재 학습률에 0.5(lr-decay)를 곱함
+                    lr = optimizer.param_groups[0]['lr'] * float(args['--lr-decay'])
+                    
+                    print('epoch %d 종료: 학습률을 %f로 감소시킵니다.' % (epoch, lr), file=sys.stderr)
+        
+                    # 옵티마이저에 새로운 학습률 적용
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = lr
 
-                if epoch == int(args['--max-epoch']):
-                    print('reached maximum number of epochs!', file=sys.stderr)
-                    exit(0)
-
+        # 최대 에포크 도달 시 종료
+        if epoch == int(args['--max-epoch']):
+            print('reached maximum number of epochs!', file=sys.stderr)
+            exit(0)
 
 def beam_search(model: NMT, test_data_src: List[List[str]], beam_size: int, max_decoding_time_step: int) -> List[List[Hypothesis]]:
     was_training = model.training
