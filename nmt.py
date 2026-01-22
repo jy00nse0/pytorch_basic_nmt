@@ -787,14 +787,14 @@ def train(args: Dict):
                         patience = 0
                 '''
         if epoch >= 5:
-                    # 현재 학습률에 0.5(lr-decay)를 곱함
-                    lr = optimizer.param_groups[0]['lr'] * float(args['--lr-decay'])
-                    
-                    print('epoch %d 종료: 학습률을 %f로 감소시킵니다.' % (epoch, lr), file=sys.stderr)
-        
-                    # 옵티마이저에 새로운 학습률 적용
-                    for param_group in optimizer.param_groups:
-                        param_group['lr'] = lr
+            # 현재 학습률에 0.5(lr-decay)를 곱함
+            lr = optimizer.param_groups[0]['lr'] * float(args['--lr-decay'])
+            
+            print('epoch %d 종료: 학습률을 %f로 감소시킵니다.' % (epoch, lr), file=sys.stderr)
+    
+            # 옵티마이저에 새로운 학습률 적용
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
 
         # 최대 에포크 도달 시 종료
         if epoch == int(args['--max-epoch']):
