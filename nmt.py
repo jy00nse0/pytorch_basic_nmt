@@ -67,7 +67,7 @@ Hypothesis = namedtuple('Hypothesis', ['value', 'score'])
 
 class NMT(nn.Module):
 
-    def __init__(self, embed_size, hidden_size, vocab, dropout_rate=0.2, input_feed=True, label_smoothing=0., use_attention=True, num_layers=4):
+    def __init__(self, embed_size, hidden_size, vocab, dropout_rate=0.2, input_feed=True, label_smoothing=0., use_attention=True, num_layers=4, use_all_layer_hiddenstates=false):
         super(NMT, self).__init__()
 
         self.embed_size = embed_size
@@ -77,6 +77,7 @@ class NMT(nn.Module):
         self.input_feed = input_feed
         self.use_attention = use_attention
         self.num_layers = num_layers
+        self.use_all_layer_hiddenstates = use_all_layer_hiddenstates
 
         # initialize neural network layers...
 
@@ -218,7 +219,11 @@ class NMT(nn.Module):
         dec_init_state = last_state
 
         # Replicate the initial state for all decoder layers
-        decoder_init_vec = [(dec_init_state[i], dec_init_cell[i]) for i in range(self.num_layers)]
+
+        if self.use_all_layer_hiddenstates :
+            decoder_init_vec = [(dec_init_state[i], dec_init_cell[i]) for i in range(self.num_layers)]
+        else :
+            decoder_init_vec = [(dec_init_state[-1], dec_init_cell[-1]) for i in range(self.num_layers)]
 
         return src_encodings, decoder_init_vec
 
@@ -244,6 +249,7 @@ class NMT(nn.Module):
         tgt_word_embeds = self.tgt_embed(tgt_sents_var)
 
         # h_tm1 is now a list of (h, c) tuples
+        # h_tm1 는 h, c 정보를 모두 가짐
         h_tm1 = decoder_init_vec
 
         att_ves = []
@@ -257,7 +263,8 @@ class NMT(nn.Module):
                 x = torch.cat([y_tm1_embed, att_tm1], dim=-1)
             else:
                 x = y_tm1_embed
-
+            # src_encodings, src_sent_masks 은 어텐션 사용 시 이용됨
+            
             new_states, att_t, alpha_t = self.step(x, h_tm1, src_encodings, src_encoding_att_linear, src_sent_masks)
 
             att_tm1 = att_t
@@ -287,6 +294,7 @@ class NMT(nn.Module):
                 current_input = self.dropout(current_input)
         
         # Use the hidden state of the top layer for attention
+        # 수정 필요할수도
         h_t_top = new_states[-1][0]
 
         if self.use_attention:
@@ -476,8 +484,11 @@ class NMT(nn.Module):
             new_states, att_t, alpha_t = self.step(x, h_tm1,
                                                       src_encodings, src_encodings_att_linear,
                                                       src_sent_masks=src_sent_masks)
-
+            # difference with my code
+            # manually compute negative log likelyhood loss instead of using torch nn modules
             # probabilities over target words
+            # forward 함수에서는 F.log_softmax -> manual NLL 계산
+            # sample 함수에서는 F.softmax -> torch.log , manual NLL계산
             p_t = F.softmax(self.readout(att_t), dim=-1)
             log_p_t = torch.log(p_t)
 
@@ -644,7 +655,7 @@ def train(args: Dict):
         print('uniformly initialize parameters [-%f, +%f]' % (uniform_init, uniform_init), file=sys.stderr)
         for p in model.parameters():
             p.data.uniform_(-uniform_init, uniform_init)
-
+    # 타겟 어휘 마스킹
     vocab_mask = torch.ones(len(vocab.tgt))
     vocab_mask[vocab.tgt['<pad>']] = 0
 
