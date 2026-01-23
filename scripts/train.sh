@@ -1,3 +1,11 @@
+#tmux new-session -d -s nmt_train \
+#"bash scripts/train.sh 2>&1 | tee train_$(date +%Y%m%d_%H%M%S).log"
+
+#tmux attach -t nmt_train
+#tmux ls
+#tmux kill-session -t nmt_train
+
+
 #!/bin/sh
 
 vocab="data/vocab.json"
@@ -8,7 +16,7 @@ dev_tgt="data/wmt14_tok_len50/validation.de"
 test_src="data/wmt14_tok_len50/test.en"
 test_tgt="data/wmt14_tok_len50/test.de"
 
-work_dir="/content/drive/MyDrive/workspace/T1_base"
+work_dir="/workspace/T1_base_nmt"
 
 mkdir -p ${work_dir}
 echo save results to ${work_dir}
@@ -23,7 +31,7 @@ python nmt.py \
     --dev-src ${dev_src} \
     --dev-tgt ${dev_tgt} \
     --input-feed \
-    --valid-niter 32323 \
+    --valid-niter 8081 \
     --batch-size 128 \
     --hidden-size 1000 \
     --embed-size 1000 \
@@ -32,11 +40,11 @@ python nmt.py \
     --dropout 0.0 \
     --clip-grad 5.0 \
     --max-epoch 10 \
-    --lr 0.0001 \
+    --lr 1.0 \
     --save-to ${work_dir}/model.bin \
     --lr-decay 0.5 \
-    --no-attention
-
+    --no-attention \
+    --lr-decay-start 5
 # decoding
 python nmt.py \
     decode \
