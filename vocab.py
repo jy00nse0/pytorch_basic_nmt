@@ -63,18 +63,50 @@ class VocabEntry(object):
             return self[word]
 
     def words2indices(self, sents):
+        # 문장 리스트가 들어올 경우 단어 리스트의 리스트로 변환, 단어 리스트면 리스트로 변환
         if type(sents[0]) == list:
+            # self[w]  →  self.word2id.get(w, self.unk_id)
             return [[self[w] for w in s] for s in sents]
         else:
             return [self[w] for w in sents]
 
     def indices2words(self, word_ids):
         return [self.id2word[w_id] for w_id in word_ids]
-
+# sents 예시:
+    # [
+    #   ["<s>", "i", "like", "nlp", "</s>"],
+    #   ["<s>", "hello", "</s>"]
+    # ]
     def to_input_tensor(self, sents: List[List[str]], device: torch.device) -> torch.Tensor:
+        # word_ids:
+        # 단어를 vocab id로 변환한 결과
+        # [
+        #   [1, 10, 23, 45, 2],
+        #   [1, 67, 2]
+        # ]
         word_ids = self.words2indices(sents)
+        # sents_t:
+    # 문장 길이를 맞추기 위해 padding 후 transpose
+    # (max_len = 5)
+    # [
+    #   [1, 1],     # timestep 0
+    #   [10, 67],   # timestep 1
+    #   [23, 2],    # timestep 2
+    #   [45, 0],    # timestep 3 (pad)
+    #   [2, 0]      # timestep 4 (pad)
+    # ]
+    # shape: (max_len, batch_size)
         sents_t = input_transpose(word_ids, self['<pad>'])
-
+    # sents_var:
+    # torch tensor로 변환, GPU(device)로 이동
+    # tensor([
+    #   [ 1,  1],
+    #   [10, 67],
+    #   [23,  2],
+    #   [45,  0],
+    #   [ 2,  0]
+    # ], dtype=torch.long, device=cuda)
+    # shape: (max_len, batch_size)
         sents_var = torch.tensor(sents_t, dtype=torch.long, device=device)
 
         return sents_var
