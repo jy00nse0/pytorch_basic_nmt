@@ -38,6 +38,8 @@ Options:
     --max-decoding-time-step=<int>          maximum number of decoding time steps [default: 70]
     --no-attention                          disable attention mechanism [default: False]
     --num-layers=<int>                      number of layers [default: 4]
+    --lr-decay-start=<int>                 start learning rate decay after this epoch [default: 10]
+    --use-all-layer-hiddenstates            use hidden states from all layers [default: False]
 """
 
 import math
@@ -67,7 +69,7 @@ Hypothesis = namedtuple('Hypothesis', ['value', 'score'])
 
 class NMT(nn.Module):
 
-    def __init__(self, embed_size, hidden_size, vocab, dropout_rate=0.2, input_feed=True, label_smoothing=0., use_attention=True, num_layers=4, use_all_layer_hiddenstates=false):
+    def __init__(self, embed_size, hidden_size, vocab, dropout_rate=0.2, input_feed=True, label_smoothing=0., use_attention=True, num_layers=4, use_all_layer_hiddenstates=False):
         super(NMT, self).__init__()
 
         self.embed_size = embed_size
@@ -211,7 +213,7 @@ class NMT(nn.Module):
 
         # Handle multi-layer encoder state
         # Reshape to (num_layers, directions, batch, hidden)
-        last_cell = last_cell.view(self.num_layers, 1, batch_size, self.hidden_size) # uni-direct
+        # last_cell = last_cell.view(self.num_layers, 1, batch_size, self.hidden_size) # uni-direct
         
         # dec_init_cell = self.decoder_cell_init(torch.cat([last_layer_cell[0], last_layer_cell[1]], dim=1))
         dec_init_cell = last_cell  # uni-direct
@@ -646,6 +648,8 @@ def train(args: Dict):
     
     # Parse num_layers
     num_layers = int(args['--num-layers'])
+    lr_decay_start = int(args['--lr-decay-start'])
+    use_all_layer_hiddenstates = args['--use-all-layer-hiddenstates']
 
     model = NMT(embed_size=int(args['--embed-size']),
                 hidden_size=int(args['--hidden-size']),
@@ -654,7 +658,8 @@ def train(args: Dict):
                 label_smoothing=float(args['--label-smoothing']),
                 use_attention=use_attention,
                 num_layers=num_layers,
-                vocab=vocab)
+                vocab=vocab,
+                use_all_layer_hiddenstates=use_all_layer_hiddenstates)
     model.train()
 
     uniform_init = float(args['--uniform-init'])
@@ -746,7 +751,6 @@ def train(args: Dict):
                 
                 is_better = len(hist_valid_scores) == 0 or valid_metric > max(hist_valid_scores)
                 hist_valid_scores.append(valid_metric)
-                '''
                 if is_better:
                     patience = 0
                     print('save currently the best model to [%s]' % model_save_path, file=sys.stderr)
@@ -785,8 +789,7 @@ def train(args: Dict):
 
                         # reset patience
                         patience = 0
-                '''
-        if epoch >= 5:
+        if epoch >= lr_decay_start:
             # 현재 학습률에 0.5(lr-decay)를 곱함
             lr = optimizer.param_groups[0]['lr'] * float(args['--lr-decay'])
             
