@@ -1,14 +1,33 @@
+#name: pytorch_nmt
+#channels:
+#  - pytorch
+#  - defaults
+#dependencies:
+#  - python=3.8
+#  - pytorch=1.6
+#  - torchvision
+#  - numpy
+ # - nltk
+#  - ipython
+ # - docopt
+# - pip:
+ #   - tqdm
+
+
 name: pytorch_nmt
 channels:
   - pytorch
+  - nvidia
   - defaults
 dependencies:
   - python=3.8
-  - pytorch=1.6
+  - pytorch=1.13.1
   - torchvision
+  - pytorch-cuda=11.8
   - numpy
   - nltk
   - ipython
   - docopt
   - pip:
     - tqdm
+    - gdown
