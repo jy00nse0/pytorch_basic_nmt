@@ -12,6 +12,7 @@ def input_transpose(sents, pad_token):
     batch_size = len(sents)
 
     sents_t = []
+    # 1부터 max_len까지의 iteration동안 iteration이 실제 문장 길이 이하면 문장의 해당 시점 단어를 읽어 sents_t에 저장, iteration이 문장 실제 길이를 넘어서는 순간부터는 pad_token을 sent_t에 저장
     for i in range(max_len):
         sents_t.append([sents[k][i] if len(sents[k]) > i else pad_token for k in range(batch_size)])
 
@@ -83,3 +84,4 @@ class LabelSmoothingLoss(nn.Module):
         loss = -F.kl_div(output, true_dist, reduction='none').sum(-1)
 
         return loss
+
