@@ -1,6 +1,7 @@
 #!/bin/sh
 git clone https://github.com/jy00nse0/pytorch_basic_nmt.git
 cd pytorch_basic_nmt
+conda init
 conda env create -f environment.yml
 cd data
 pip install gdown
