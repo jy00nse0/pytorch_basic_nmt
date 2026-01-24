@@ -1,3 +1,5 @@
+# T1_base
+
 #tmux new-session -d -s nmt_train \
 #"bash scripts/train.sh 2>&1 | tee train_$(date +%Y%m%d_%H%M%S).log"
 
@@ -28,10 +30,9 @@ python nmt.py \
     --vocab ${vocab} \
     --train-src ${train_src} \
     --train-tgt ${train_tgt} \
-    --dev-src ${dev_src} \
-    --dev-tgt ${dev_tgt} \
-    --input-feed \
-    --valid-niter 8081 \
+    --dev-src ${test_src} \
+    --dev-tgt ${test_tgt} \
+    --valid-niter 4000 \
     --batch-size 128 \
     --hidden-size 1000 \
     --embed-size 1000 \
@@ -57,3 +58,4 @@ python nmt.py \
 
 
 perl multi-bleu.perl ${test_tgt} < ${work_dir}/decode.txt
+
