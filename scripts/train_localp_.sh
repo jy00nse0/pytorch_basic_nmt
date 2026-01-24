@@ -1,15 +1,13 @@
-#chmod +x train.sh
-#tmux new-session -d -s nmt_train \
-#"bash scripts/train.sh 2>&1 | tee train_$(date +%Y%m%d_%H%M%S).log"
+# T1- Base + reverse + dropout + local-p attention (general) + feed input
 
 #chmod +x scripts/train_localp.sh
 #tmux new-session -d -s nmt_train \
 #"bash scripts/train_localp.sh 2>&1 | tee train_T1_base_reverse_nmt_localp_general_feedinput$(date +%Y%m%d_%H%M%S).log"
-#tmux kill-session -t nmt_train_localp
+
 #tmux attach -t nmt_train
 #tmux ls
 #tmux kill-session -t nmt_train
-# T1- Base + reverse + dropout + local-p attention (general) + feed input
+
 #!/bin/sh
 
 vocab="data/vocab.json"
@@ -32,8 +30,8 @@ python nmt.py \
     --vocab ${vocab} \
     --train-src ${train_src} \
     --train-tgt ${train_tgt} \
-    --dev-src ${dev_src} \
-    --dev-tgt ${dev_tgt} \
+    --dev-src ${test_src} \
+    --dev-tgt ${test_tgt} \
     --input-feed \
     --valid-niter 4000 \
     --batch-size 128 \
