@@ -836,10 +836,11 @@ def train(args: Dict):
                 use_all_layer_hiddenstates=use_all_layer_hiddenstates)
     
     # Configure attention
-    att_type = args.get('--att-type', 'global')
-    att_score = args.get('--att-score', 'dot')
-    window_size = int(args.get('--window-size', 10))
-    model.set_attention_config(att_type, att_score, window_size)
+    if use_attention:
+        att_type = args.get('--att-type', 'global')
+        att_score = args.get('--att-score', 'dot')
+        window_size = int(args.get('--window-size', 10))
+        model.set_attention_config(att_type, att_score, window_size)
 
     model.train()
 
