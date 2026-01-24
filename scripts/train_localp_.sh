@@ -3,13 +3,13 @@
 #"bash scripts/train.sh 2>&1 | tee train_$(date +%Y%m%d_%H%M%S).log"
 
 #chmod +x scripts/train_localp.sh
-#tmux new-session -d -s nmt_train_localp \
+#tmux new-session -d -s nmt_train \
 #"bash scripts/train_localp.sh 2>&1 | tee train_T1_base_reverse_nmt_localp_general_feedinput$(date +%Y%m%d_%H%M%S).log"
 #tmux kill-session -t nmt_train_localp
 #tmux attach -t nmt_train
 #tmux ls
 #tmux kill-session -t nmt_train
-
+# T1- Base + reverse + dropout + local-p attention (general) + feed input
 #!/bin/sh
 
 vocab="data/vocab.json"
@@ -47,7 +47,7 @@ python nmt.py \
     --lr 1.0 \
     --save-to ${work_dir}/model.bin \
     --lr-decay 0.5 \
-    --att-type local-m \
+    --att-type local-p \
     --att-score general \
     --lr-decay-start 8 \
     --reverse 
@@ -57,7 +57,7 @@ python nmt.py \
     --cuda \
     --beam-size 1 \
     --max-decoding-time-step 50 \
-    --att-type global \
+    --att-type local-p \
     --att-score general \
     --window-size 10 \
     --reverse \
