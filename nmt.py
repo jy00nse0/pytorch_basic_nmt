@@ -38,6 +38,10 @@ Options:
     --max-decoding-time-step=<int>          maximum number of decoding time steps [default: 70]
     --no-attention                          disable attention mechanism [default: False]
     --num-layers=<int>                      number of layers [default: 4]
+    --reverse                               reverse source sentence for NMT
+    --att-type=<str>                        attention type (global, local-m, local-p) [default: global]
+    --att-score=<str>                       attention score function (dot, general, location) [default: dot]
+    --window-size=<int>                     window size D for local attention [default: 10]
     --lr-decay-start=<int>                 start learning rate decay after this epoch [default: 10]
     --use-all-layer-hiddenstates            use hidden states from all layers [default: False]
 """
@@ -120,6 +124,31 @@ class NMT(nn.Module):
             self.label_smoothing_loss = LabelSmoothingLoss(label_smoothing,
                                                            tgt_vocab_size=len(vocab.tgt), padding_idx=vocab.tgt['<pad>'])
 
+        self.att_type = None
+        self.att_score = None
+        self.window_size = 10
+        self.att_Wa = None
+        self.att_Wp = None
+        self.att_vp = None
+
+    def set_attention_config(self, att_type='global', att_score='dot', window_size=10):
+        self.att_type = att_type
+        self.att_score = att_score
+        self.window_size = window_size
+        
+        print(f"Attenuation Config: Type={att_type}, Score={att_score}, WindowSize={window_size}", file=sys.stderr)
+
+        if self.use_attention:
+            if att_score == 'general':
+                self.att_Wa = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+            elif att_score == 'location':
+                self.att_Wa = nn.Linear(self.hidden_size, 100, bias=False)
+                print("Location Score Size: 100", file=sys.stderr)
+            
+            if att_type == 'local-p':
+                self.att_Wp = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+                self.att_vp = nn.Linear(self.hidden_size, 1, bias=False)
+
     @property
     def device(self) -> torch.device:
         return self.src_embed.weight.device
@@ -149,8 +178,10 @@ class NMT(nn.Module):
 
         src_sent_masks = self.get_attention_mask(src_encodings, src_sents_len)
 
+        src_len_tensor = torch.tensor(src_sents_len, dtype=torch.float, device=self.device)
+
         # (tgt_sent_len - 1, batch_size, hidden_size)
-        att_vecs = self.decode(src_encodings, src_sent_masks, decoder_init_vec, tgt_sents_var[:-1])
+        att_vecs = self.decode(src_encodings, src_sent_masks, decoder_init_vec, tgt_sents_var[:-1], src_len_tensor=src_len_tensor)
 
         # (tgt_sent_len - 1, batch_size, tgt_vocab_size)
         tgt_words_log_prob = F.log_softmax(self.readout(att_vecs), dim=-1)
@@ -230,7 +261,7 @@ class NMT(nn.Module):
         return src_encodings, decoder_init_vec
 
     def decode(self, src_encodings: torch.Tensor, src_sent_masks: torch.Tensor,
-               decoder_init_vec: List[Tuple[torch.Tensor, torch.Tensor]], tgt_sents_var: torch.Tensor) -> torch.Tensor:
+               decoder_init_vec: List[Tuple[torch.Tensor, torch.Tensor]], tgt_sents_var: torch.Tensor, src_len_tensor: torch.Tensor = None) -> torch.Tensor:
         """
         Given source encodings, compute the log-likelihood of predicting the gold-standard target
         sentence tokens
@@ -257,7 +288,7 @@ class NMT(nn.Module):
         att_ves = []
 
         # start from y_0=`<s>`, iterate until y_{T-1}
-        for y_tm1_embed in tgt_word_embeds.split(split_size=1):
+        for t, y_tm1_embed in enumerate(tgt_word_embeds.split(split_size=1)):
             y_tm1_embed = y_tm1_embed.squeeze(0)
             if self.input_feed:
                 # input feeding: concate y_tm1 and previous attentional vector
@@ -267,7 +298,7 @@ class NMT(nn.Module):
                 x = y_tm1_embed
             # src_encodings, src_sent_masks 은 어텐션 사용 시 이용됨
             
-            new_states, att_t, alpha_t = self.step(x, h_tm1, src_encodings, src_encoding_att_linear, src_sent_masks)
+            new_states, att_t, alpha_t = self.step(x, h_tm1, src_encodings, src_encoding_att_linear, src_sent_masks, t=t, src_len_tensor=src_len_tensor)
 
             att_tm1 = att_t
             h_tm1 = new_states
@@ -280,7 +311,7 @@ class NMT(nn.Module):
 
     def step(self, x: torch.Tensor,
              h_tm1_list: List[Tuple[torch.Tensor, torch.Tensor]],
-             src_encodings: torch.Tensor, src_encoding_att_linear: torch.Tensor, src_sent_masks: torch.Tensor) -> Tuple[List[Tuple], torch.Tensor, torch.Tensor]:
+             src_encodings: torch.Tensor, src_encoding_att_linear: torch.Tensor, src_sent_masks: torch.Tensor, t: int = 0, src_len_tensor: torch.Tensor = None) -> Tuple[List[Tuple], torch.Tensor, torch.Tensor]:
         
         current_input = x
         new_states = []
@@ -300,7 +331,7 @@ class NMT(nn.Module):
         h_t_top = new_states[-1][0]
 
         if self.use_attention:
-            ctx_t, alpha_t = self.dot_prod_attention(h_t_top, src_encodings, src_encoding_att_linear, src_sent_masks)
+            ctx_t, alpha_t = self.apply_attention(h_t_top, src_encodings, src_encoding_att_linear, src_sent_masks, t, src_len_tensor=src_len_tensor)
             att_t = torch.tanh(self.att_vec_linear(torch.cat([h_t_top, ctx_t], 1)))  # E.q. (5)
             att_t = self.dropout(att_t)
         else:
@@ -309,21 +340,112 @@ class NMT(nn.Module):
 
         return new_states, att_t, alpha_t
 
-    def dot_prod_attention(self, h_t: torch.Tensor, src_encoding: torch.Tensor, src_encoding_att_linear: torch.Tensor,
-                           mask: torch.Tensor=None) -> Tuple[torch.Tensor, torch.Tensor]:
-        # (batch_size, src_sent_len)
-        att_weight = torch.bmm(src_encoding_att_linear, h_t.unsqueeze(2)).squeeze(2)
+    def apply_attention(self, h_t: torch.Tensor, src_encoding: torch.Tensor, src_encoding_att_linear: torch.Tensor,
+                           mask: torch.Tensor=None, t: int=0, src_len_tensor: torch.Tensor=None) -> Tuple[torch.Tensor, torch.Tensor]:
+        # h_t: (batch_size, hidden_size)
+        # src_encoding: (batch_size, src_sent_len, hidden_size)
+        
+        batch_size, src_len, _ = src_encoding.size()
 
+        # 1. Score Calculation
+        if self.att_score == 'dot':
+            att_weight = torch.bmm(src_encoding, h_t.unsqueeze(2)).squeeze(2)
+        elif self.att_score == 'general':
+            # Ensure att_Wa is used. In global attention, pre-computation is efficient.
+            # If src_encoding_att_linear is passed (precomputed W_a * h_s), we use it.
+            # Otherwise we compute it.
+            if src_encoding_att_linear is not None:
+                att_weight = torch.bmm(src_encoding_att_linear, h_t.unsqueeze(2)).squeeze(2)
+            else:
+                # Compute on the fly (e.g. for local if not precomputed or distinct params)
+                # For general, it's efficient to precompute.
+                # W_a h_s
+                temp = self.att_Wa(src_encoding) 
+                att_weight = torch.bmm(temp, h_t.unsqueeze(2)).squeeze(2)
+        elif self.att_score == 'location':
+            # Location-based score: a_t = softmax(Wa(h_t))
+            # Wa is (hidden, 100) -> output (batch, 100)
+            raw_scores = self.att_Wa(h_t) # (B, 100)
+            # Slice to current src_len (which is batch max len in Tensor)
+            att_weight = raw_scores[:, :src_len]
+        else:
+            # Default fallback for safety
+            att_weight = torch.bmm(src_encoding, h_t.unsqueeze(2)).squeeze(2)
+
+        # 2. Local Attention Alignment (p_t)
+        if self.att_type == 'global':
+            # Global: All positions
+            pass
+        elif self.att_type == 'local-m':
+            # Monotonic: p_t = t
+            p_t = torch.tensor([t] * batch_size, device=self.device, dtype=torch.float)
+        elif self.att_type == 'local-p':
+            # Predictive: p_t = S * sigmoid(v_p^T tanh(W_p h_t))
+            # S = actual sentence length for each batch item
+            x = torch.tanh(self.att_Wp(h_t))
+            score_p = torch.sigmoid(self.att_vp(x)).squeeze(1) # (B, )
+            if src_len_tensor is not None:
+                p_t = score_p * src_len_tensor # (B, )
+            else:
+                p_t = score_p * src_len # fallback if not provided
+
+        # 3. Masking
+        # (1) Padding Mask (original 'mask' arg)
         if mask is not None:
             att_weight.data.masked_fill_(mask.bool(), -float('inf'))
 
-        softmaxed_att_weight = F.softmax(att_weight, dim=-1)
+        # (2) Window Masking (Local only)
+        if self.att_type in ['local-m', 'local-p']:
+            # Create window mask
+            # window: [p_t - D, p_t + D]
+            # p_t is (B, )
+            # We need to mask positions j where j < p_t - D or j > p_t + D
+            # positions: (1, L)
+            positions = torch.arange(src_len, device=self.device).unsqueeze(0).float() # (1, L)
+            
+            p_t_expanded = p_t.unsqueeze(1) # (B, 1)
+            D = self.window_size
+            
+            # Mask condition: |j - p_t| > D
+            # => (j < p_t - D) or (j > p_t + D)
+            start = p_t_expanded - D
+            end = p_t_expanded + D
+            
+            local_mask = (positions < start) | (positions > end)
+            att_weight.data.masked_fill_(local_mask, -float('inf'))
+        """
+        print("att_type: ", self.att_type)
+        print("att_weight.shape: ", att_weight.shape)
+        """
+        # 4. Mask Checks to prevent NaN
+        # Check if any row is entirely -inf
+        all_masked = torch.all(att_weight == -float('inf'), dim=-1)
+        if all_masked.any():
+            att_weight[all_masked, 0] = 0.0
+
+        # 4. Softmax
+        softmaxed_att_weight = F.softmax(att_weight, dim=-1) # alpha_t
+
+        # 5. Gaussian Weighting (Local-p only)
+        # Apply AFTER softmax as per prompt: "Softmax 결과인 alpha_t에 요소별 곱"
+        if self.att_type == 'local-p':
+            # Gaussian: exp( - (s - p_t)^2 / (2 * sigma^2) )
+            # sigma = D / 2
+            positions = torch.arange(src_len, device=self.device).float()
+            sigma = self.window_size / 2.0
+            
+            # (B, L)
+            numerator = (positions.unsqueeze(0) - p_t.unsqueeze(1)) ** 2
+            gauss_weight = torch.exp(-numerator / (2 * sigma ** 2))
+            
+            softmaxed_att_weight = softmaxed_att_weight * gauss_weight
 
         att_view = (att_weight.size(0), 1, att_weight.size(1))
         # (batch_size, hidden_size)
         ctx_vec = torch.bmm(softmaxed_att_weight.view(*att_view), src_encoding).squeeze(1)
 
         return ctx_vec, softmaxed_att_weight
+
 
     def beam_search(self, src_sent: List[str], beam_size: int=5, max_decoding_time_step: int=70) -> List[Hypothesis]:
         """
@@ -332,7 +454,11 @@ class NMT(nn.Module):
 
         src_sents_var = self.vocab.src.to_input_tensor([src_sent], self.device)
 
-        src_encodings, dec_init_vec = self.encode(src_sents_var, [len(src_sent)])
+        src_len = len(src_sent)
+        src_encodings, dec_init_vec = self.encode(src_sents_var, [src_len])
+
+        # Prepare src_len_tensor for beam search
+        src_len_tensor = torch.tensor([src_len], dtype=torch.float, device=self.device)
 
         if self.use_attention:
             src_encodings_att_linear = self.att_src_linear(src_encodings)
@@ -363,6 +489,9 @@ class NMT(nn.Module):
                                                                                src_encodings_att_linear.size(2))
             else:
                 exp_src_encodings_att_linear = None
+            
+            # Expand src_len_tensor
+            exp_src_len_tensor = src_len_tensor.expand(hyp_num)
 
             y_tm1 = torch.tensor([self.vocab.tgt[hyp[-1]] for hyp in hypotheses], dtype=torch.long, device=self.device)
             y_tm1_embed = self.tgt_embed(y_tm1)
@@ -373,7 +502,7 @@ class NMT(nn.Module):
                 x = y_tm1_embed
 
             new_states, att_t, alpha_t = self.step(x, h_tm1,
-                                                      exp_src_encodings, exp_src_encodings_att_linear, src_sent_masks=None)
+                                                      exp_src_encodings, exp_src_encodings_att_linear, src_sent_masks=None, t=t, src_len_tensor=exp_src_len_tensor)
 
             # log probabilities over target words
             log_p_t = F.log_softmax(self.readout(att_t), dim=-1)
@@ -435,7 +564,12 @@ class NMT(nn.Module):
 
         src_sents_var = self.vocab.src.to_input_tensor(src_sents, self.device)
 
-        src_encodings, dec_init_vec = self.encode(src_sents_var, [len(sent) for sent in src_sents])
+        src_sents_len = [len(sent) for sent in src_sents]
+        src_encodings, dec_init_vec = self.encode(src_sents_var, src_sents_len)
+        
+        # Prepare src_len_tensor
+        src_len_tensor = torch.tensor(src_sents_len, dtype=torch.float, device=self.device)
+        src_len_tensor = src_len_tensor.repeat(sample_size)
 
         if self.use_attention:
             src_encodings_att_linear = self.att_src_linear(src_encodings)
@@ -485,7 +619,7 @@ class NMT(nn.Module):
 
             new_states, att_t, alpha_t = self.step(x, h_tm1,
                                                       src_encodings, src_encodings_att_linear,
-                                                      src_sent_masks=src_sent_masks)
+                                                      src_sent_masks=src_sent_masks, t=t, src_len_tensor=src_len_tensor)
             # difference with my code
             # manually compute negative log likelyhood loss instead of using torch nn modules
             # probabilities over target words
@@ -538,17 +672,23 @@ class NMT(nn.Module):
         return completed_samples
 
     @staticmethod
-    def load(model_path: str):
+    def load(model_path: str, attention_config):
         # FIX: weights_only=False for PyTorch 2.6+ compatibility
         params = torch.load(model_path, map_location=lambda storage, loc: storage, weights_only=False)
         args = params['args']
-        
+        print(args)
         # backward compatibility
         args['use_attention'] = args.get('use_attention', True)
         args['num_layers'] = args.get('num_layers', 1) # Default to 1 if loading old model
-        
         model = NMT(vocab=params['vocab'], **args)
+
+        if args['use_attention'] and attention_config:
+            att_type = attention_config['att_type']
+            att_score = attention_config['att_score']
+            window_size = attention_config['window_size']
+            model.set_attention_config(att_type, att_score, window_size)
         model.load_state_dict(params['state_dict'])
+        print(model)
 
         return model
 
@@ -566,7 +706,32 @@ class NMT(nn.Module):
         torch.save(params, path)
 
 
-def evaluate_ppl(model, dev_data, batch_size=32):
+def debug_log_reverse(name, original_src_sents, reversed_src_sents, vocab, device):
+    """
+    Log original and reversed source sentence tensors for debugging.
+    Only logs the first sentence of the batch.
+    """
+    print(f"--- {name} Debugging ---", file=sys.stderr)
+    
+    # Take the first sentence
+    orig_sent = original_src_sents[0]
+    rev_sent = reversed_src_sents[0]
+    
+    print(f"Original Text: {orig_sent}", file=sys.stderr)
+    print(f"Reversed Text: {rev_sent}", file=sys.stderr)
+    
+    # Convert to tensor
+    # We wrap in a list because to_input_tensor expects a batch
+    orig_tensor = vocab.src.to_input_tensor([orig_sent], device)
+    rev_tensor = vocab.src.to_input_tensor([rev_sent], device)
+    
+    print(f"Original Source Sentence Tensor:\n{orig_tensor}", file=sys.stderr)
+    print(f"Reversed Source Sentence Tensor:\n{rev_tensor}", file=sys.stderr)
+    print("-------------------------", file=sys.stderr)
+
+
+def evaluate_ppl(model, dev_data, batch_size=32, reverse=False):
+
     """
     Evaluate perplexity on dev sentences
 
@@ -589,7 +754,15 @@ def evaluate_ppl(model, dev_data, batch_size=32):
     # e.g., `torch.no_grad()`
 
     with torch.no_grad():
+        first_batch = True
         for src_sents, tgt_sents in batch_iter(dev_data, batch_size):
+            if reverse:
+                reversed_src_sents = [s[::-1] for s in src_sents]
+                #if first_batch:
+                #    #debug_log_reverse("Evaluation", src_sents, reversed_src_sents, model.vocab, model.device)
+                #    first_batch = False
+                src_sents = reversed_src_sents
+            
             loss = -model(src_sents, tgt_sents).sum()
 
             cum_loss += loss.item()
@@ -650,6 +823,7 @@ def train(args: Dict):
     num_layers = int(args['--num-layers'])
     lr_decay_start = int(args['--lr-decay-start'])
     use_all_layer_hiddenstates = args['--use-all-layer-hiddenstates']
+    reverse = args['--reverse']
 
     model = NMT(embed_size=int(args['--embed-size']),
                 hidden_size=int(args['--hidden-size']),
@@ -660,6 +834,13 @@ def train(args: Dict):
                 num_layers=num_layers,
                 vocab=vocab,
                 use_all_layer_hiddenstates=use_all_layer_hiddenstates)
+    
+    # Configure attention
+    att_type = args.get('--att-type', 'global')
+    att_score = args.get('--att-score', 'dot')
+    window_size = int(args.get('--window-size', 10))
+    model.set_attention_config(att_type, att_score, window_size)
+
     model.train()
 
     uniform_init = float(args['--uniform-init'])
@@ -691,6 +872,17 @@ def train(args: Dict):
 
         for src_sents, tgt_sents in batch_iter(train_data, batch_size=train_batch_size, shuffle=True):
             train_iter += 1
+
+            if reverse:
+                reversed_src_sents = [s[::-1] for s in src_sents]
+                # Log only for the very first batch of the first epoch (or every epoch? Requirement says "first batch/sentence of each phase")
+                # Let's log once per execution or once per epoch? "학습, 평가, 추론 각각의 첫 번째 배치/문자에 대해"
+                # Interpreting as "First batch encountered in this run" for training.
+                # However, since training runs for many epochs, maybe once per training run is enough.
+                # But to be safe and visible, I'll do it once at the start of training loop (flag).
+                #if train_iter == 1:
+                     #debug_log_reverse("Training", src_sents, reversed_src_sents, vocab, device)
+                src_sents = reversed_src_sents
 
             optimizer.zero_grad()
 
@@ -732,63 +924,64 @@ def train(args: Dict):
                 report_loss = report_tgt_words = report_examples = 0.
 
             # perform validation
-            if train_iter % valid_niter == 0:
-                print('epoch %d, iter %d, cum. loss %.2f, cum. ppl %.2f cum. examples %d' % (epoch, train_iter,
+            with torch.no_grad():
+                if train_iter % valid_niter == 0:
+                    print('epoch %d, iter %d, cum. loss %.2f, cum. ppl %.2f cum. examples %d' % (epoch, train_iter,
                                                                                          cum_loss / cum_examples,
-                                                                                         np.exp(cum_loss / cum_tgt_words),
-                                                                                         cum_examples), file=sys.stderr)
+                                                                                         np.exp(cum_loss / cum_tgt_words),cum_examples), file=sys.stderr)
 
-                cum_loss = cum_examples = cum_tgt_words = 0.
-                valid_num += 1
+                    cum_loss = cum_examples = cum_tgt_words = 0.
+                    valid_num += 1
 
-                print('begin validation ...', file=sys.stderr)
+                    print('begin validation ...', file=sys.stderr)
 
-                # compute dev. ppl and bleu
-                dev_ppl = evaluate_ppl(model, dev_data, batch_size=128)   # dev batch size can be a bit larger
-                valid_metric = -dev_ppl
+                    # compute dev. ppl and bleu
+                    dev_ppl = evaluate_ppl(model, dev_data, batch_size=128, reverse=reverse)   # dev batch size can be a bit larger
+                    valid_metric = -dev_ppl
 
-                print('validation: iter %d, dev. ppl %f' % (train_iter, dev_ppl), file=sys.stderr)
-                
-                is_better = len(hist_valid_scores) == 0 or valid_metric > max(hist_valid_scores)
-                hist_valid_scores.append(valid_metric)
-                if is_better:
-                    patience = 0
-                    print('save currently the best model to [%s]' % model_save_path, file=sys.stderr)
-                    model.save(model_save_path)
-
-                    # also save the optimizers' state
-                    torch.save(optimizer.state_dict(), model_save_path + '.optim')
-                elif patience < int(args['--patience']):
-                    patience += 1
-                    print('hit patience %d' % patience, file=sys.stderr)
-
-                    if patience == int(args['--patience']):
-                        num_trial += 1
-                        print('hit #%d trial' % num_trial, file=sys.stderr)
-                        if num_trial == int(args['--max-num-trial']):
-                            print('early stop!', file=sys.stderr)
-                            exit(0)
-
-                        # decay lr, and restore from previously best checkpoint
-                        lr = optimizer.param_groups[0]['lr'] * float(args['--lr-decay'])
-                        print('load previously best model and decay learning rate to %f' % lr, file=sys.stderr)
-
-                        # load model
-                        # FIX: weights_only=False for PyTorch 2.6+ compatibility
-                        params = torch.load(model_save_path, map_location=lambda storage, loc: storage, weights_only=False)
-                        model.load_state_dict(params['state_dict'])
-                        model = model.to(device)
-
-                        print('restore parameters of the optimizers', file=sys.stderr)
-                        # FIX: weights_only=False for PyTorch 2.6+ compatibility
-                        optimizer.load_state_dict(torch.load(model_save_path + '.optim', weights_only=False))
-
-                        # set new lr
-                        for param_group in optimizer.param_groups:
-                            param_group['lr'] = lr
-
-                        # reset patience
+                    print('validation: iter %d, dev. ppl %f' % (train_iter, dev_ppl), file=sys.stderr)
+                    
+                    is_better = len(hist_valid_scores) == 0 or valid_metric > max(hist_valid_scores)
+                    hist_valid_scores.append(valid_metric)
+                    if is_better:
                         patience = 0
+                        print('save currently the best model to [%s]' % model_save_path, file=sys.stderr)
+                        model.save(model_save_path)
+
+                        # also save the optimizers' state
+                        torch.save(optimizer.state_dict(), model_save_path + '.optim')
+                    elif patience < int(args['--patience']):
+                        patience += 1
+                        print('hit patience %d' % patience, file=sys.stderr)
+                        '''
+                        if patience == int(args['--patience']):
+                            num_trial += 1
+                            print('hit #%d trial' % num_trial, file=sys.stderr)
+                            if num_trial == int(args['--max-num-trial']):
+                                print('early stop!', file=sys.stderr)
+                                exit(0)
+
+                            # decay lr, and restore from previously best checkpoint
+                            lr = optimizer.param_groups[0]['lr'] * float(args['--lr-decay'])
+                            print('load previously best model and decay learning rate to %f' % lr, file=sys.stderr)
+
+                            # load model
+                            # FIX: weights_only=False for PyTorch 2.6+ compatibility
+                            params = torch.load(model_save_path, map_location=lambda storage, loc: storage, weights_only=False)
+                            model.load_state_dict(params['state_dict'])
+                            model = model.to(device)
+
+                            print('restore parameters of the optimizers', file=sys.stderr)
+                            # FIX: weights_only=False for PyTorch 2.6+ compatibility
+                            optimizer.load_state_dict(torch.load(model_save_path + '.optim', weights_only=False))
+
+                            # set new lr
+                            for param_group in optimizer.param_groups:
+                                param_group['lr'] = lr
+
+                            # reset patience
+                            patience = 0
+                        '''
         if epoch >= lr_decay_start:
             # 현재 학습률에 0.5(lr-decay)를 곱함
             lr = optimizer.param_groups[0]['lr'] * float(args['--lr-decay'])
@@ -804,13 +997,21 @@ def train(args: Dict):
             print('reached maximum number of epochs!', file=sys.stderr)
             exit(0)
 
-def beam_search(model: NMT, test_data_src: List[List[str]], beam_size: int, max_decoding_time_step: int) -> List[List[Hypothesis]]:
+def beam_search(model: NMT, test_data_src: List[List[str]], beam_size: int, max_decoding_time_step: int, reverse: bool = False) -> List[List[Hypothesis]]:
     was_training = model.training
     model.eval()
 
     hypotheses = []
     with torch.no_grad():
+        first_sent = True
         for src_sent in tqdm(test_data_src, desc='Decoding', file=sys.stdout):
+            if reverse:
+                reversed_src_sent = src_sent[::-1]
+                #if first_sent:
+                #     #debug_log_reverse("Inference", [src_sent], [reversed_src_sent], model.vocab, model.device)
+                #     first_sent = False
+                src_sent = reversed_src_sent
+            
             example_hyps = model.beam_search(src_sent, beam_size=beam_size, max_decoding_time_step=max_decoding_time_step)
 
             hypotheses.append(example_hyps)
@@ -834,14 +1035,30 @@ def decode(args: Dict[str, str]):
         test_data_tgt = read_corpus(args['TEST_TARGET_FILE'], source='tgt')
 
     print(f"load model from {args['MODEL_PATH']}", file=sys.stderr)
-    model = NMT.load(args['MODEL_PATH'])
+    '''
+    attention_config :
+    --att-type=<str>                        attention type (global, local-m, local-p) [default: global]
+    --att-score=<str>                       attention score function (dot, general, location) [default: dot]
+    --window-size=<int>                     window size D for local attention [default: 10]
+    '''
+    if not args['--no-attention']:
+        attention_config={
+            "att_type": args['--att-type'],
+            "att_score": args['--att-score'],
+            "window_size": int(args['--window-size'])
+        }
+    else:
+        attention_config=None
+    model = NMT.load(args['MODEL_PATH'],attention_config)    
 
     if args['--cuda']:
-        model = model.to(torch.device("cuda:0"))
+        model = model.to(torch.device("cuda:0"))    # Configure attention
+
 
     hypotheses = beam_search(model, test_data_src,
                              beam_size=int(args['--beam-size']),
-                             max_decoding_time_step=int(args['--max-decoding-time-step']))
+                             max_decoding_time_step=int(args['--max-decoding-time-step']),
+                             reverse=args['--reverse'])
 
     if args['TEST_TARGET_FILE']:
         top_hypotheses = [hyps[0] for hyps in hypotheses]
@@ -857,7 +1074,7 @@ def decode(args: Dict[str, str]):
 
 def main():
     args = docopt(__doc__)
-
+    print(args)
     # seed the random number generators
     seed = int(args['--seed'])
     torch.manual_seed(seed)
