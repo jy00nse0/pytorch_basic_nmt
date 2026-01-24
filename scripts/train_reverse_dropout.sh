@@ -1,7 +1,7 @@
-# T1_base_reverse
+# T1_base_reverse_dropout
 
 #tmux new-session -d -s nmt_train \
-#"bash scripts/train_reverse.sh 2>&1 | tee train_reverse$(date +%Y%m%d_%H%M%S).log"
+#"bash scripts/train_reverse_dropout.sh 2>&1 | tee train_reverse_dropout$(date +%Y%m%d_%H%M%S).log"
 
 #tmux attach -t nmt_train
 #tmux ls
