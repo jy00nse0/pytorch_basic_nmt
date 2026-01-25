@@ -18,7 +18,7 @@ dev_tgt="data/wmt14_tok_len50/test.de"
 test_src="data/wmt14_tok_len50/test.en"
 test_tgt="data/wmt14_tok_len50/test.de"
 
-work_dir="/workspace/T1_base_reverse_nmt_localp_general_feedinput"
+work_dir="/workspace/T4_localp_dot"
 
 mkdir -p ${work_dir}
 echo save results to ${work_dir}
